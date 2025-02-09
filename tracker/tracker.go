@@ -12,9 +12,21 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	dht "github.com/darshandeepak-07/go-torrent/dht_handler"
 )
 
 func ContactTracker(announceURL string, infoHash [20]byte, peerID [20]byte, port int) ([]byte, error) {
+	_, err := net.LookupIP(announceURL)
+	if err != nil {
+		fmt.Println("DNS lookup failed:", err)
+		fmt.Println("Proceeding with DHT.....")
+		peers, err1 := dht.FetchPeers(infoHash)
+		if err1 != nil {
+			log.Println("Failed to fetch peers from DHT : ", err1)
+		}
+		return peers, err1
+	}
 	if strings.HasPrefix(announceURL, "http") {
 		return contactHTTPTracker(announceURL, infoHash, peerID, port)
 	} else if strings.HasPrefix(announceURL, "udp") {
@@ -60,7 +72,7 @@ func contactUDPTracker(announceURL string, infoHash [20]byte, peerID [20]byte, p
 	u, err := url.Parse(announceURL)
 
 	if u.Port() == "" {
-		u.Host += ":53"
+		u.Host += ":6969"
 	}
 	if err != nil {
 		return nil, err
