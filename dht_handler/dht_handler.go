@@ -1,11 +1,11 @@
 package dht
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"log"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/anacrolix/dht/v2"
@@ -45,27 +45,33 @@ func FetchPeers(infoHash [20]byte) ([]byte, error) {
 		log.Println("Failed to initialize DHT node:", err)
 		return nil, err
 	}
-
-	if server == nil {
-		log.Println("DHT server is nil")
-		return nil, errors.New("DHT server failed to initialize")
-	}
 	defer server.Close()
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		stats, err := server.Bootstrap()
-		if err != nil {
-			log.Println("DHT Bootstrapping failed:", err)
-			return
-		}
-		log.Println("DHT Bootstrapped:", stats)
-	}()
-	wg.Wait()
-	time.Sleep(time.Second * 5)
-	server.AnnounceTraversal(infoHash)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	stats, err := server.BootstrapContext(ctx)
+	if err != nil {
+		log.Println("DHT Bootstrapping failed:", err)
+		return nil, err
+	}
+	log.Println("DHT Bootstrapped:", stats)
+
+	announce, err := server.AnnounceTraversal(infoHash)
+	if err != nil {
+		log.Println("Failed to announce infoHash:", err)
+		return nil, err
+	}
+	defer announce.Close()
+
+	select {
+	case <-announce.Finished():
+		log.Println("Announcement traversal completed")
+	case <-ctx.Done():
+		log.Println("Announcement traversal timed out")
+		return nil, errors.New("announcement traversal timed out")
+	}
+
 	if server.PeerStore() == nil {
 		log.Println("DHT PeerStore is nil")
 		return nil, errors.New("DHT PeerStore is unavailable")
