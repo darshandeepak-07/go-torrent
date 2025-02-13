@@ -26,6 +26,7 @@ require (
 	github.com/edsrzf/mmap-go v1.1.0 // indirect
 	github.com/huandu/xstrings v1.3.2 // indirect
 	github.com/rs/dnscache v0.0.0-20211102005908-e0241e321417 // indirect
+	github.com/shiyanhui/dht v0.0.0-20201219151056-5a20f3199263
 	golang.org/x/sync v0.10.0 // indirect
 	golang.org/x/sys v0.1.0 // indirect
 	golang.org/x/time v0.0.0-20220609170525-579cf78fd858 // indirect

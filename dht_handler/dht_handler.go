@@ -3,100 +3,102 @@ package dht
 import (
 	"context"
 	"encoding/binary"
-	"errors"
-	"log"
+
 	"net"
 	"time"
 
 	"github.com/anacrolix/dht/v2"
 )
 
-func initDHTNode() (*dht.Server, error) {
-	udpConn, err := net.ListenPacket("udp", ":6881")
-	if err != nil {
-		return nil, err
-	}
-
-	bootstrapNodes, err := dht.GlobalBootstrapAddrs("udp")
-	if err != nil {
-		log.Println("Failed to fetch bootstrap nodes:", err)
-		return nil, err
-	}
-
-	cfg := dht.ServerConfig{
-		Conn:          udpConn,
-		StartingNodes: dht.StartingNodesGetter(func() ([]dht.Addr, error) { return bootstrapNodes, nil }),
-		NoSecurity:    true,
-	}
-
-	server, err := dht.NewServer(&cfg)
-	if err != nil {
-		log.Println("Failed to create DHT server:", err)
-		return nil, err
-	}
-
-	log.Println("DHT Node started on port 6881")
-	return server, nil
+type DHTClient struct {
+    server *dht.Server
 }
 
-func FetchPeers(infoHash [20]byte) ([]byte, error) {
-	server, err := initDHTNode()
-	if err != nil {
-		log.Println("Failed to initialize DHT node:", err)
-		return nil, err
-	}
-	defer server.Close()
+func NewDHTClient() (*DHTClient, error) {
+    udpConn, err := net.ListenPacket("udp4", ":0")
+    if err != nil {
+        return nil, fmt.Errorf("failed to listen: %w", err)
+    }
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
+    cfg := dht.NewDefaultServerConfig()
+    cfg.ConnectionTracking = true
+    cfg.Conn = udpConn
+    cfg.StartingNodes = dht.GlobalBootstrapAddrs("udp4")
 
-	stats, err := server.BootstrapContext(ctx)
-	if err != nil {
-		log.Println("DHT Bootstrapping failed:", err)
-		return nil, err
-	}
-	log.Println("DHT Bootstrapped:", stats)
+    server, err := dht.NewServer(cfg)
+    if err != nil {
+        udpConn.Close()
+        return nil, fmt.Errorf("failed to create DHT server: %w", err)
+    }
 
-	announce, err := server.AnnounceTraversal(infoHash)
-	if err != nil {
-		log.Println("Failed to announce infoHash:", err)
-		return nil, err
-	}
-	defer announce.Close()
+    return &DHTClient{
+        server: server,
+    }, nil
+}
 
-	select {
-	case <-announce.Finished():
-		log.Println("Announcement traversal completed")
-	case <-ctx.Done():
-		log.Println("Announcement traversal timed out")
-		return nil, errors.New("announcement traversal timed out")
-	}
+func (c *DHTClient) Close() error {
+    if c.server != nil {
+        return c.server.Close()
+    }
+    return nil
+}
 
-	if server.PeerStore() == nil {
-		log.Println("DHT PeerStore is nil")
-		return nil, errors.New("DHT PeerStore is unavailable")
-	}
+func (c *DHTClient) FetchPeers(infoHash [20]byte, timeout time.Duration) ([]byte, error) {
+    ctx, cancel := context.WithTimeout(context.Background(), timeout)
+    defer cancel()
 
-	peers := server.PeerStore().GetPeers(infoHash)
-	if len(peers) == 0 {
-		log.Println("No peers found for the given info hash")
-		return nil, nil
-	}
+    // Bootstrap the DHT
+    if _, err := c.server.Bootstrap(); err != nil {
+        return nil, fmt.Errorf("bootstrap failed: %w", err)
+    }
 
-	var peerBytes []byte
-	for _, peer := range peers {
-		ip := peer.IP.To4()
-		if ip == nil {
-			log.Println("Skipping non-IPv4 peer:", peer)
-			continue
-		}
-		portBytes := make([]byte, 2)
-		binary.BigEndian.PutUint16(portBytes, uint16(peer.Port))
+    // Get peers for the infohash
+    peers := make(chan dht.PeersValues, 100)
+    c.server.GetPeers(ctx, string(infoHash[:]), peers)
 
-		peerBytes = append(peerBytes, ip...)
-		peerBytes = append(peerBytes, portBytes...)
-		log.Println("Found Peer:", peer)
-	}
+    var allPeers []net.TCPAddr
+    timer := time.NewTimer(timeout)
+    defer timer.Stop()
 
-	return peerBytes, nil
+collectPeers:
+    for {
+        select {
+        case <-ctx.Done():
+            break collectPeers
+        case <-timer.C:
+            break collectPeers
+        case peersValues, ok := <-peers:
+            if !ok {
+                break collectPeers
+            }
+            for _, p := range peersValues.Peers {
+                if ip := p.IP.To4(); ip != nil {
+                    allPeers = append(allPeers, net.TCPAddr{
+                        IP:   ip,
+                        Port: p.Port,
+                    })
+                }
+            }
+        }
+    }
+
+    if len(allPeers) == 0 {
+        return nil, nil
+    }
+
+    // Convert peers to compact format
+    peerBytes := make([]byte, 0, len(allPeers)*6)
+    for _, peer := range allPeers {
+        ip := peer.IP.To4()
+        if ip == nil {
+            continue
+        }
+        
+        peerBytes = append(peerBytes, ip...)
+        portBytes := make([]byte, 2)
+        binary.BigEndian.PutUint16(portBytes, uint16(peer.Port))
+        peerBytes = append(peerBytes, portBytes...)
+    }
+
+    return peerBytes, nil
 }
