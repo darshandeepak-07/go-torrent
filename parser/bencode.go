@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"bytes"
+	"crypto/sha1"
 	"os"
 
 	"github.com/darshandeepak-07/go-torrent/model"
@@ -21,4 +23,14 @@ func ParseTorrent(filename string) (*model.TorrentFile, error) {
 	}
 
 	return torrent, nil
+}
+
+func ComputeInfoHash(info interface{}) ([20]byte, error) {
+	var buf bytes.Buffer
+	err := bencode.Marshal(&buf, info)
+	if err != nil {
+		return [20]byte{}, err
+	}
+	hash := sha1.Sum(buf.Bytes())
+	return hash, nil
 }
